@@ -1,0 +1,136 @@
+---
+title: "Vix and Future Volatility"
+output: html_notebook
+---
+ 
+```{r setup, include = FALSE}
+library(tidyquant)
+library(tidyverse)
+library(quantmod)
+library(broom)
+```
+
+In our last post, we examined the relationship between the [VIX](http://www.cboe.com/products/vix-index-volatility/vix-options-and-futures/vix-index) and the past, realized volatility of the S&P 500. 
+
+The VIX is a measure of the expected future volatility of the S&P500 and it has been [quite low recently](https://www.cnbc.com/2017/07/26/wall-streets-fear-index-the-vix-falls-to-record-low-under-9-after-fed-statement.html).  As a volatility nerd, I came across an interesting piece from [Bloomber on the meaning of the VIX](https://www.bloomberg.com/view/articles/2017-07-03/what-history-says-about-low-volatility). As a reproducibility and R nerd, I decided to reproduce some of the findings using R. Obviously, the substance and ideas here are 100% attributable to AQR - my goal is add to our R volatility toolbox
+
+(If you want to start at the beginning with three posts on portfolio volatility, see this intro post and this post on rolling vol and this post on visualization.) 
+ 
+
+```{r}
+symbols <- c("^GSPC", "^VIX")
+
+prices <- 
+  getSymbols(symbols, src = 'yahoo', from = "1990-01-01", 
+             auto.assign = TRUE, warnings = FALSE) %>% 
+  map(~Cl(get(.)))
+  
+# get daily, cont compounded returns
+sp500_returns <- na.omit(ROC(GSPC$GSPC.Close, 1, type = "continuous"))
+# spy_retcal_returns <- na.omit(CalculateReturns(spy_close, method = "compound"))
+# spy_perret_returns <- na.omit(periodReturn(spy_close, period = 'daily', type = 'log'))
+  
+  
+sp500_rolling_sd_20 <- rollapply(sp500_returns,
+                             20,
+                             function(x) StdDev(x))
+
+sp500_rolling_sd_60 <- rollapply(sp500_returns,
+                             60,
+                             function(x) StdDev(x))
+  
+sp500_rolling_sd_annualized_20 <- (round((sqrt(252) * sp500_rolling_sd_20 * 100), 2))
+sp500_rolling_sd_annualized_60 <- (round((sqrt(252) * sp500_rolling_sd_60 * 100), 2))
+
+vol_vix_xts <- merge.xts(VIX$VIX.Close, sp500_rolling_sd_annualized_20, sp500_rolling_sd_annualized_60)
+
+vol_vix_df <- 
+  vol_vix_xts %>% 
+  as_tibble(preserve_row_names = TRUE) %>% 
+  mutate(date = ymd(row.names)) %>% 
+  select(date, everything(), -row.names) %>% 
+  rename(vix = VIX.Close, realized_vol_20 = GSPC.Close, realized_vol_60 = GSPC.Close.1) 
+
+```
+
+
+Alright, let's move on to consider what the VIX might be telling us about the future.
+
+```{r, message = FALSE, warning = FALSE}
+
+start.date <- index(sp500_rolling_sd_annualized_20[1])
+
+end.date <- index(sp500_rolling_sd_annualized_20[nrow(sp500_rolling_sd_annualized_20) - 19])
+
+# Extract the data, not the time index since we're adding to a tibble.
+future_sp500_vol <- as_tibble(coredata(sp500_rolling_sd_annualized_20[20:nrow(sp500_rolling_sd_annualized_20), ]))
+
+vix_sp500_future_vol <- 
+  VIX$VIX.Close[paste(start.date, end.date, sep = "::")] %>% 
+  as_tibble(preserve_row_names = TRUE) %>% 
+  mutate(date = ymd(row.names)) %>% 
+  select(-row.names) %>%
+  na.omit() %>% 
+  select(date, everything()) %>% 
+  bind_cols(future_sp500_vol[1]) %>% 
+  rename(vix = VIX.Close, Spy.future = GSPC.Close) 
+ 
+tail(vix_sp500_future_vol)
+```
+
+```{r}
+line_future_vol20 <- 
+  # Plot vix on the x axis and future vol on the y axis
+  ggplot(vix_sp500_future_vol, aes(date)) + 
+  geom_line(aes(y = Spy.future, colour = "SP500")) +
+  geom_line(aes(y = vix, colour = "Vix")) +
+  scale_color_manual(values = c(SP500 = 'blue', Vix = 'red')) +
+  # The remaining lines are aesthetic, title, axis labels.
+  ggtitle("Vix and SP500 Subsequent Volatility") +
+  xlab("date") +
+  ylab("percent") +
+  scale_y_continuous(labels = function(x){ paste0(x, "%") }, 
+                     breaks = scales::pretty_breaks(n=10)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+line_future_vol20
+```
+
+
+
+
+```{r, message=FALSE, warning=FALSE}
+# Assign different colors and shapes for obesrvations since the election.
+# I'll go with pink diamonds for observations since the election.
+# There might be a better way to assign colors and shapes conditional on dates but
+# I like the simplicity here..
+vix_sp500_future_vol$color <- ifelse(vix_sp500_future_vol$date <= "2016-11-08", 'light blue', 'pink')
+vix_sp500_future_vol$shape <- ifelse(vix_sp500_future_vol$date <= "2016-11-08", 15, 18)
+
+scatter_future_vol20 <- 
+  # Plot vix on the x axis and future vol on the y axis
+  ggplot(vix_sp500_future_vol, aes(vix, Spy.future)) + 
+  geom_point(aes(vix, Spy.future), 
+             colour = vix_sp500_future_vol$color, 
+             shape = vix_sp500_future_vol$shape) +
+  # Overlay a line of vix points, to make it easier to see what vix was predicting
+  # on each each day.
+  geom_line(aes(vix, vix)) +
+  # The remaining lines are aesthetic, title, axis labels.
+  ggtitle("Vix v. Subsequent Volatility") +
+  xlab("Vix") +
+  ylab("Realized vol 20 subsequent trading days") +
+  scale_y_continuous(labels = function(x){ paste0(x, "%") }, 
+                     breaks = scales::pretty_breaks(n=10)) +
+  scale_x_continuous(labels = function(x){ paste0(x, "%") },
+                     breaks = scales::pretty_breaks(n=20)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+scatter_future_vol20
+```
+
+
+For well-articulated insights and theory, have a look at the original [piece on Bloomberg](https://www.bloomberg.com/view/articles/2017-07-03/what-history-says-about-low-volatility). Briefly, the pink diamonds indicate we have been in a low volatility regime since the election, both measured by VIX and realized volatility. Another interesting note is that since 1990, we have never seen subsequent one-month volatiliy reach 20% when the VIX was below 12% (add a vertical line at 12% to see this more clearl). Said another way, spikes in realized volatility tend to follow spikes in the VIX.   
+
+That's all for today. The main goal was to reproduce some interesting visualizations and insights about the VIX and realized volatility and hopefully that can serve as a starting point for future analysis using R. Thanks for reading and next time we'll wrap this into a Shiny app.
