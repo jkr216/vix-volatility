@@ -4,6 +4,11 @@ output: html_notebook
 ---
  
 ```{r setup, include = FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+
+for (pkg in c('tidyverse', 'tidyquant')) 
+  if (!requireNamespace(pkg)) install.packages(pkg)
+
 library(tidyquant)
 library(tidyverse)
 ```
@@ -53,7 +58,7 @@ end.date <- index(sp500_rolling_sd_annualized_20[nrow(sp500_rolling_sd_annualize
 
 Ok, we will start on `r start.date` and end on `r end.date`.
 
-Now let's grab the SP500 rolling volatility data between those dates. Note we use `coredata()` function because we don't need the time index, just the data.
+Now let's grab the SP500 rolling volatility data between those dates. Note we use the `coredata()` function because we don't need the time index, just the data.
 
 ```{r, message = FALSE, warning = FALSE}
 # Extract the data, not the time index since we're adding to a tibble.
@@ -80,7 +85,7 @@ vix_sp500_future_vol <-
 tail(vix_sp500_future_vol)
 ```
 
-Take a peek at the result. We now have a tibble with a column for the VIX price on date t, and a column for realized, future volatility 20 days after t.
+Take a peek at the result. We now have a tibble with a column for the VIX price on date t, and a column for realized, future volatility 20 days after date t.
 
 Now it's on to `ggplot` to recreate the visualizations from Bloomberg.
 
@@ -102,8 +107,7 @@ line_future_vol20 <-
 line_future_vol20
 ```
 
-I can't eyeball much from that chart, let's go to a scatter plot. Before we do so, let's use nested if/else statements to create three eras: pre-historic, Obama, Trump,
-
+I can't eyeball much from that chart so let's move to a scatter plot.   We want to have a different color and shape scheme for different dates so we'll use nested if/else statements to create three eras: pre-historic, Obama, Trump. 
 
 ```{r, message=FALSE, warning=FALSE}
 vix_sp500_future_vol$era <- 
@@ -112,7 +116,7 @@ vix_sp500_future_vol$era <-
                   vix_sp500_future_vol$date <=  "2016-11-08", 'Obama', 'Trump'))
 ```
 
-
+By creating that `era` column, we can pass it to `aes()` for a nicer chart and legend.
 
 ```{r, message=FALSE, warning=FALSE}
 scatter_future_vol20 <- 
@@ -134,10 +138,11 @@ scatter_future_vol20 <-
 scatter_future_vol20
 ```
 
-That diagonal black line is the volatility predicted by the VIX and we can see that actual volatility tends to be a bit lower than predicted. The maroon diamonds are the observations durning the Obama administration. The green triangles are the observations since November 8, 2016. Over the last ~9 years, realized volatility has generally been lower than what the VIX was predicting.
+That diagonal black line is the volatility predicted by the VIX and we can see that actual volatility tends to be a bit lower than predicted. The maroon diamonds are the observations durning the Obama administration. The green triangles are the observations since November 8, 2016. Over the last ~9 years, realized volatility has generally been lower than what the VIX was predicting. Indeed, it's hard to look at those green diamonds and worry too much about a volatility spike right now. 
+
+Another interesting note: realized one-month volatiliy has not reached 20% when the VIX was below 12% (add a vertical line at 12% to see this more clearly).
 
 For the well-articulated insights and theory, have a look at the original [piece on Bloomberg](https://www.bloomberg.com/view/articles/2017-07-03/what-history-says-about-low-volatility). 
 
-Another interesting note is that since 1990, we have never seen subsequent one-month volatiliy reach 20% when the VIX was below 12% (add a vertical line at 12% to see this more clearly). Said another way, spikes in realized volatility tend to follow spikes in the VIX.   
 
-That's all for today. The main goal was to reproduce visualizations and insights about the VIX and realized volatility.  Thanks for reading and next time we'll wrap our VIX work into a Shiny app.
+That's all for today. Thanks for reading and next time we'll wrap our VIX work into a Shiny app.
