@@ -6,18 +6,17 @@ output: html_notebook
 ```{r setup, include = FALSE}
 library(tidyquant)
 library(tidyverse)
-library(quantmod)
-library(broom)
 ```
 
-In our last post, we examined the relationship between the [VIX](http://www.cboe.com/products/vix-index-volatility/vix-options-and-futures/vix-index) and the past, realized volatility of the S&P 500. 
+In a [previous post](http://www.reproduciblefinance.com/2017/08/28/realized-volatility-and-the-vix/), we examined the relationship between the [VIX](http://www.cboe.com/products/vix-index-volatility/vix-options-and-futures/vix-index) and the past, realized volatility of the S&P 500. 
 
-The VIX is a measure of the expected future volatility of the S&P500 and it has been [quite low recently](https://www.cnbc.com/2017/07/26/wall-streets-fear-index-the-vix-falls-to-record-low-under-9-after-fed-statement.html).  As a volatility nerd, I came across an interesting piece from [Bloomber on the meaning of the VIX](https://www.bloomberg.com/view/articles/2017-07-03/what-history-says-about-low-volatility). As a reproducibility and R nerd, I decided to reproduce some of the findings using R. Obviously, the substance and ideas here are 100% attributable to AQR - my goal is add to our R volatility toolbox
+Today, we'll think about how/whether the VIX predicts future volatility and we'll be reproducing some visualizations from [this Bloomberg piece](https://www.bloomberg.com/view/articles/2017-07-03/what-history-says-about-low-volatility).  
 
-(If you want to start at the beginning with three posts on portfolio volatility, see this intro post and this post on rolling vol and this post on visualization.) 
- 
+Once again, the substance and ideas here are 100% attributable to Bloomberg - my goal is to reproduce and add to our R toolkit, and learn something about volatility.
 
-```{r}
+First, we grab the price history of the VIX and SP500, convert to returns, and calculate the rolling 20-day volatility of the SP500. 
+
+```{r, message=FALSE, warning=FALSE}
 symbols <- c("^GSPC", "^VIX")
 
 prices <- 
@@ -27,34 +26,22 @@ prices <-
   
 # get daily, cont compounded returns
 sp500_returns <- na.omit(ROC(GSPC$GSPC.Close, 1, type = "continuous"))
-# spy_retcal_returns <- na.omit(CalculateReturns(spy_close, method = "compound"))
-# spy_perret_returns <- na.omit(periodReturn(spy_close, period = 'daily', type = 'log'))
-  
+
   
 sp500_rolling_sd_20 <- rollapply(sp500_returns,
                              20,
                              function(x) StdDev(x))
-
-sp500_rolling_sd_60 <- rollapply(sp500_returns,
-                             60,
-                             function(x) StdDev(x))
   
 sp500_rolling_sd_annualized_20 <- (round((sqrt(252) * sp500_rolling_sd_20 * 100), 2))
-sp500_rolling_sd_annualized_60 <- (round((sqrt(252) * sp500_rolling_sd_60 * 100), 2))
 
-vol_vix_xts <- merge.xts(VIX$VIX.Close, sp500_rolling_sd_annualized_20, sp500_rolling_sd_annualized_60)
-
-vol_vix_df <- 
-  vol_vix_xts %>% 
-  as_tibble(preserve_row_names = TRUE) %>% 
-  mutate(date = ymd(row.names)) %>% 
-  select(date, everything(), -row.names) %>% 
-  rename(vix = VIX.Close, realized_vol_20 = GSPC.Close, realized_vol_60 = GSPC.Close.1) 
-
+vol_vix_xts <- merge.xts(VIX$VIX.Close, sp500_rolling_sd_annualized_20)
 ```
 
+We have VIX prices and rolling 20-day SP500 volatility. We want to reproduce the visualizations that illuminate how the VIX predicts realized volatility. In other words, is the VIX reading on 2017-01-01 telling us anything aobut realized volatility 20 days from 2017-01-01? 
 
-Alright, let's move on to consider what the VIX might be telling us about the future.
+The data wrangling challenge here is all about the dates. We need to compare the VIX reading on 2017-01-01 to the realized volatility that occurs over the 20 days after 2017-01-01. It's not hard to understand this in our heads, it's a little tricky to line the data up correctly (full disclosure: I had to go to a whiteboard and draw out 20 cells with arrows for what need to go where from the data frame.)
+
+First, we'll set a start date as the first date index of `sp500_rolling_sd_annualized_20` and an end date for the date index that is 19 days before end of `sp500_rolling_sd_annualized_20`.
 
 ```{r, message = FALSE, warning = FALSE}
 
@@ -62,21 +49,40 @@ start.date <- index(sp500_rolling_sd_annualized_20[1])
 
 end.date <- index(sp500_rolling_sd_annualized_20[nrow(sp500_rolling_sd_annualized_20) - 19])
 
+```
+
+Ok, we will start on `r start.date` and end on `r end.date`.
+
+Now let's grab the SP500 rolling volatility data between those dates. Note we use `coredata()` function because we don't need the time index, just the data.
+
+```{r, message = FALSE, warning = FALSE}
 # Extract the data, not the time index since we're adding to a tibble.
 future_sp500_vol <- as_tibble(coredata(sp500_rolling_sd_annualized_20[20:nrow(sp500_rolling_sd_annualized_20), ]))
+```
+
+Now we want to get the VIX data for those same dates and combine them into one tibble. We will get the VIX data with `VIX$VIX.Close[paste(start.date, end.date, sep = "::")]`.
+
+```{r, message = FALSE, warning = FALSE}
 
 vix_sp500_future_vol <- 
-  VIX$VIX.Close[paste(start.date, end.date, sep = "::")] %>% 
+  # Get VIX data
+  VIX$VIX.Close[paste(start.date, end.date, sep = "::")] %>%
+  # Add a date column.
   as_tibble(preserve_row_names = TRUE) %>% 
-  mutate(date = ymd(row.names)) %>% 
-  select(-row.names) %>%
-  na.omit() %>% 
-  select(date, everything()) %>% 
+  mutate(date = ymd(row.names)) %>%
+  # Delete row.names.
+  select(-row.names) %>% 
+  select(date, everything()) %>%
+  # Add the SP500 data with bind_cols - important line of code here!
   bind_cols(future_sp500_vol[1]) %>% 
   rename(vix = VIX.Close, Spy.future = GSPC.Close) 
  
 tail(vix_sp500_future_vol)
 ```
+
+Take a peek at the result. We now have a tibble with a column for the VIX price on date t, and a column for realized, future volatility 20 days after t.
+
+Now it's on to `ggplot` to recreate the visualizations from Bloomberg.
 
 ```{r}
 line_future_vol20 <- 
@@ -84,9 +90,9 @@ line_future_vol20 <-
   ggplot(vix_sp500_future_vol, aes(date)) + 
   geom_line(aes(y = Spy.future, colour = "SP500")) +
   geom_line(aes(y = vix, colour = "Vix")) +
-  scale_color_manual(values = c(SP500 = 'blue', Vix = 'red')) +
+  scale_color_manual(values = c(SP500 = 'maroon', Vix = 'cornflowerblue')) +
   # The remaining lines are aesthetic, title, axis labels.
-  ggtitle("Vix and SP500 Subsequent Volatility") +
+  ggtitle("Vix and SP500 Volatility 20 Trading Days Hence") +
   xlab("date") +
   ylab("percent") +
   scale_y_continuous(labels = function(x){ paste0(x, "%") }, 
@@ -96,26 +102,25 @@ line_future_vol20 <-
 line_future_vol20
 ```
 
+I can't eyeball much from that chart, let's go to a scatter plot. Before we do so, let's use nested if/else statements to create three eras: pre-historic, Obama, Trump,
+
+
+```{r, message=FALSE, warning=FALSE}
+vix_sp500_future_vol$era <- 
+  ifelse(vix_sp500_future_vol$date <= "2008-11-03", 'pre-historic',
+         ifelse(vix_sp500_future_vol$date >"2008-11-04" & 
+                  vix_sp500_future_vol$date <=  "2016-11-08", 'Obama', 'Trump'))
+```
 
 
 
 ```{r, message=FALSE, warning=FALSE}
-# Assign different colors and shapes for obesrvations since the election.
-# I'll go with pink diamonds for observations since the election.
-# There might be a better way to assign colors and shapes conditional on dates but
-# I like the simplicity here..
-vix_sp500_future_vol$color <- ifelse(vix_sp500_future_vol$date <= "2016-11-08", 'light blue', 'pink')
-vix_sp500_future_vol$shape <- ifelse(vix_sp500_future_vol$date <= "2016-11-08", 15, 18)
-
 scatter_future_vol20 <- 
-  # Plot vix on the x axis and future vol on the y axis
-  ggplot(vix_sp500_future_vol, aes(vix, Spy.future)) + 
-  geom_point(aes(vix, Spy.future), 
-             colour = vix_sp500_future_vol$color, 
-             shape = vix_sp500_future_vol$shape) +
-  # Overlay a line of vix points, to make it easier to see what vix was predicting
-  # on each each day.
-  geom_line(aes(vix, vix)) +
+  ggplot(vix_sp500_future_vol, aes(vix, Spy.future, color = era, shape = era)) + 
+  geom_point() +
+  scale_color_manual(values=c("maroon", "cornflowerblue", "green")) +
+  scale_shape_manual(values = c(17, 15, 18)) +
+  geom_line(aes(vix, vix), color = "black") +
   # The remaining lines are aesthetic, title, axis labels.
   ggtitle("Vix v. Subsequent Volatility") +
   xlab("Vix") +
@@ -123,14 +128,16 @@ scatter_future_vol20 <-
   scale_y_continuous(labels = function(x){ paste0(x, "%") }, 
                      breaks = scales::pretty_breaks(n=10)) +
   scale_x_continuous(labels = function(x){ paste0(x, "%") },
-                     breaks = scales::pretty_breaks(n=20)) +
+                     breaks = scales::pretty_breaks(n=10)) +
   theme(plot.title = element_text(hjust = 0.5))
-
 
 scatter_future_vol20
 ```
 
+That diagonal black line is the volatility predicted by the VIX and we can see that actual volatility tends to be a bit lower than predicted. The maroon diamonds are the observations durning the Obama administration. The green triangles are the observations since November 8, 2016. Over the last ~9 years, realized volatility has generally been lower than what the VIX was predicting.
 
-For well-articulated insights and theory, have a look at the original [piece on Bloomberg](https://www.bloomberg.com/view/articles/2017-07-03/what-history-says-about-low-volatility). Briefly, the pink diamonds indicate we have been in a low volatility regime since the election, both measured by VIX and realized volatility. Another interesting note is that since 1990, we have never seen subsequent one-month volatiliy reach 20% when the VIX was below 12% (add a vertical line at 12% to see this more clearl). Said another way, spikes in realized volatility tend to follow spikes in the VIX.   
+For the well-articulated insights and theory, have a look at the original [piece on Bloomberg](https://www.bloomberg.com/view/articles/2017-07-03/what-history-says-about-low-volatility). 
 
-That's all for today. The main goal was to reproduce some interesting visualizations and insights about the VIX and realized volatility and hopefully that can serve as a starting point for future analysis using R. Thanks for reading and next time we'll wrap this into a Shiny app.
+Another interesting note is that since 1990, we have never seen subsequent one-month volatiliy reach 20% when the VIX was below 12% (add a vertical line at 12% to see this more clearly). Said another way, spikes in realized volatility tend to follow spikes in the VIX.   
+
+That's all for today. The main goal was to reproduce visualizations and insights about the VIX and realized volatility.  Thanks for reading and next time we'll wrap our VIX work into a Shiny app.

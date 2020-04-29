@@ -4,10 +4,14 @@ output: html_notebook
 ---
  
 ```{r setup, include = FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
 # packages required for this post
-for (pkg in c('tidyverse', 'tidyquant', 'broom')) 
-  if (!requireNamespace(pkg)) install.packages(pkg)
+# for (pkg in c('tidyverse', 'tidyquant', 'broom', 'timetk', 'tibbletime', 'RcppRoll')) 
+#   if (!requireNamespace(pkg)) install.packages(pkg)
 
+library(RcppRoll)
+library(timetk)
+library(tibbletime)
 library(tidyquant)
 library(tidyverse)
 library(broom)
@@ -21,21 +25,27 @@ With that said, let's get started.
 
 First we'll need the price histories of the S&P500 and the VIX, and we'll convert S&P500 prices to returns.
 
-```{r, message=FALSE, warning=FALSE}
+```{r}
 symbols <- c("^GSPC", "^VIX")
 
-prices<- 
-  getSymbols(symbols, src = 'yahoo', from = "1990-01-01", 
+prices <- 
+  getSymbols("^GSPC", src = 'yahoo', from = "2017-01-01", 
              auto.assign = TRUE, warnings = FALSE) %>% 
-  map(~Cl(get(.)))
+  map(~Ad(get(.))) %>% 
+   #reduce(merge) %>%
+  #`colnames<-`(c("sp500")) %>% 
+  tk_tbl(preserve_index = TRUE, rename_index = "date") %>%
+  tq_mutate(mutate_fun = periodReturn, period = "daily", type = "log") %>%
+  mutate(sp500_returns = (log(GSPC.Adjusted) - log(lag(GSPC.Adjusted)))) %>% 
+  mutate(sp500_roll_20 = roll_sd(daily.returns, 20, fill = NA, align = "right"),
+         sp500_roll_60 = roll_sd(daily.returns, 60, fill = NA, align = "right"))
   
-# get daily, cont compounded returns
-sp500_returns <- na.omit(ROC(GSPC$GSPC.Close, 1, type = "continuous"))
+
 ```
 
 Now we need to calculate the 20-day and 60-day trailing volatility of the S&P500 returns and annualize that volatility. We will use `rollapply` and the `StdDev()` function for the initial calculation, and then will annualize assuming 252 trading days in a year.
 
-```{r, message=FALSE, warning=FALSE}
+```{r}
   
 sp500_rolling_sd_20 <- rollapply(sp500_returns,
                              20,

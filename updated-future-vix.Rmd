@@ -1,0 +1,112 @@
+---
+title: "Updated future vol vix"
+output: html_notebook
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+# packages required for this post
+for (pkg in c('tidyverse', 'tidyquant', 'broom', 'timetk', 'tibbletime', 'RcppRoll')) 
+  if (!requireNamespace(pkg)) install.packages(pkg)
+
+library(RcppRoll)
+library(timetk)
+library(tibbletime)
+library(tidyquant)
+library(tidyverse)
+library(broom)
+```
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+symbols <- c("^GSPC",
+             "^VIX")
+
+prices <- 
+  getSymbols(symbols, src = 'yahoo', from = "2010-01-01", 
+             auto.assign = TRUE, warnings = FALSE) %>% 
+  map(~Ad(get(.))) %>% 
+  reduce(merge) %>%
+  `colnames<-`(c("sp500", "vix")) %>% 
+  tk_tbl(preserve_index = TRUE, rename_index = "date") %>%
+  mutate(sp500_returns = (log(sp500) - log(lag(sp500)))) %>%
+  replace_na(list(sp500_returns = 0)) %>%
+  mutate(sp500_roll_20 = roll_sd(sp500_returns, 20, fill = NA, align = "right"),
+         sp500_roll_20 = (round((sqrt(252) * sp500_roll_20 * 100), 2)),
+         sp500_roll_60 = roll_sd(sp500_returns, 60, fill = NA, align = "right"),
+         sp500_roll_60 = (round((sqrt(252) * sp500_roll_60 * 100), 2))) %>% 
+  na.omit() %>% 
+  mutate(sp500_future_20 = lead(sp500_roll_20, 20, order_by = date),
+         sp500_future_60 = lead(sp500_roll_60, 60, order_by = date))
+
+tail(prices, 30)
+```
+
+```{r}
+prices %>% 
+  ggplot(aes(x = date)) + 
+  geom_line(aes(y = sp500_future_20, colour = "SP500")) +
+  geom_line(aes(y = vix, colour = "Vix")) +
+  scale_color_manual(values = c(SP500 = 'maroon', Vix = 'cornflowerblue')) +
+  # The remaining lines are aesthetic, title, axis labels.
+  ggtitle("Vix and SP500 Volatility 20 Trading Days Hence") +
+  xlab("date") +
+  ylab("percent") +
+  scale_y_continuous(labels = function(x){ paste0(x, "%") }, 
+                     breaks = scales::pretty_breaks(n=10)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+
+```{r}
+prices %>% 
+  mutate(era = 
+           ifelse(date <= "2016-12-31", 'pre-2017',
+                  ifelse(date > "2016-12-31" & date <  "2018-01-01", '2017', '2018'))) %>% 
+  filter(date >= "2017-08-01") %>% 
+  ggplot(aes(x = vix, y = sp500_future_20, color = era, shape = era)) + 
+  geom_point() +
+  scale_color_manual(values=c("maroon", "cornflowerblue", "green")) +
+  scale_shape_manual(values = c(17, 15, 18)) +
+  geom_line(aes(vix, vix), color = "black") +
+  # The remaining lines are aesthetic, title, axis labels.
+  ggtitle("Vix v. Subsequent Volatility: 2010 - Present") +
+  xlab("Vix") +
+  ylab("Realized vol 20 subsequent trading days") +
+  scale_y_continuous(labels = function(x){ paste0(x, "%") }, 
+                     breaks = scales::pretty_breaks(n=10)) +
+  scale_x_continuous(labels = function(x){ paste0(x, "%") },
+                     breaks = scales::pretty_breaks(n=10)) +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+Note the distance between the highest blue box and the second highest is some rough measure of how much volatility was added by one - ONE! - day.
+
+```{r}
+prices %>% 
+  mutate(era = 
+           ifelse(date <= "2016-12-31", 'pre-2017',
+                  ifelse(date > "2016-12-31" & date <  "2018-01-01", '2017', '2018'))) %>% 
+  filter(date >= "2017-01-01") %>% 
+  ggplot(aes(x = vix, y = sp500_future_20, color = era, shape = era)) + 
+  geom_point() +
+  scale_color_manual(values=c("maroon", "cornflowerblue", "green")) +
+  scale_shape_manual(values = c(17, 15, 18)) +
+  geom_line(aes(vix, vix), color = "black") +
+  # The remaining lines are aesthetic, title, axis labels.
+  ggtitle("Vix v. Subsequent Volatility: 2017 & 2018") +
+  xlab("Vix") +
+  ylab("Realized vol 20 subsequent trading days") +
+  scale_y_continuous(labels = function(x){ paste0(x, "%") }, 
+                     breaks = scales::pretty_breaks(n=10)) +
+  scale_x_continuous(labels = function(x){ paste0(x, "%") },
+                     breaks = scales::pretty_breaks(n=10)) +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+Yesterday's movement produced that blue square with the arrow pointing to it by juicing the 20-day rolling volatility. Prior to that, since START DATE, the VIX has mostly been underpredicting subsequent volatility. Indeed, I see only one other observation where actual, subsequent volatility was higher than predicted by the VIX. 
+
+I have no idea what caused this (though the prevailing theory seems to be inflation fears -> interest rate increases) but I do think this chart puts into context what we saw yesteray was an historically unusual and it's normal for the VIX to miss a few of those. Have a look at the chart below.

@@ -1,0 +1,200 @@
+---
+title: "Revixiting: updating previous work on the vix"
+output: html_notebook
+---
+ 
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+# packages required for this post
+# for (pkg in c('tidyverse', 'tidyquant', 'broom', 'timetk', 'tibbletime', 'RcppRoll', 'roll')) 
+#   if (!requireNamespace(pkg)) install.packages(pkg)
+
+library(RcppRoll)
+library(roll)
+library(timetk)
+library(tibbletime)
+library(tidyquant)
+library(tidyverse)
+library(broom)
+library(janitor)
+```
+
+
+### Import prices, calculate returns and rolling volatility
+
+
+```{r}
+symbols <- c("^GSPC", "^VIX")
+
+# prices <- 
+#   getSymbols(symbols, src = 'yahoo', from = "1990-01-01", 
+#              auto.assign = TRUE, warnings = FALSE) %>% 
+#   map(~Ad(get(.))) %>% 
+#   reduce(merge) %>%
+#   `colnames<-`(c("sp500", "vix"))
+
+prices_tq <- 
+  symbols %>% 
+  tq_get(get = "stock.prices", from = "1990-01-01")
+
+```
+
+Next we convert that object to a `tibble` using `tk_tbl(preserve_index = TRUE, rename_index = "date")` from the `timetk` package. Now we can use `dplyr's` `mutate()` function to add a colum for returns with 
+`mutate(sp500_returns = (log(sp500) - log(lag(sp500))))`, and then a column for the rolling 20-day volatility with 
+`mutate(sp500_roll_20 = roll_sd(sp500_returns, 20, fill = NA, align = "right")`. I want to annualize the rolling volatility (as the AQR piece did) so will then mutate the 20-day rolling vol with
+`sp500_roll_20 = (round((sqrt(252) * sp500_roll_20 * 100), 2))`.  
+
+```{r}
+sp500_vix_rolling_vol <- 
+  prices_tq %>%  
+  select(symbol, date, close) %>% 
+  spread(symbol, close) %>% 
+  clean_names() %>% 
+  mutate(sp500_returns = gspc/lag(gspc,1) -1) %>%
+  #replace_na(list(sp500_returns = 0)) %>%
+  mutate(sp500_roll_5 = RcppRoll::roll_sd(sp500_returns, 5, fill = NA, align = "right"),
+         sp500_roll_5 = (round((sqrt(252) * sp500_roll_5 * 100), 2))) %>% 
+  na.omit() %>% 
+  mutate(sp500_future_5 = lead(sp500_roll_5, 5, order_by = date),
+         sp500_future_divided_vix = sp500_future_5/vix,
+         three_year_median_vix_ratio = roll_median(vix, 36, fill = NA)/roll_median(sp500_future_5, 36, fill = NA)) %>% 
+na.omit()
+
+  
+head(sp500_vix_rolling_vol)
+```
+
+"To study this, I build a toy risk-model (that is, a risk-model I hope gets at the main point but is way simpler than one you’d likely use in real life). I imagine an investor trying to target a 15%9 constant volatility exposure to the S&P 500 (or, to be fussy, the S&P 500 and cash, as varying the amount of cash is how this is done) using today’s VIX to make the decision whether to lever up (when the VIX is forecasting lower than 15% volatility) or de-lever (when the VIX is forecasting higher than 15% volatility). Now, even in a toy model, I can’t just use a VIX of 25 to say “the VIX is forecasting a 25% annualized volatility.” That toy would be broken at the get-go. The VIX reflects option-based implied volatilities that average decently higher than realized volatility (leading to the so-called volatility or variance risk premium). So I enhance the risk-model (though I’d still call it a toy!) to adjust for the VIX’s average overstatement.I look back over the prior rolling three years and measure the ratio of the median VIX to the median realized 5-day S&P 500 volatility, and use this ratio in conjunction with the VIX level to size positions at each point in time. So if that ratio has been 1.5x (meaning the VIX overstated volatility by 50%) over the last three years and the VIX is at 30 now, I’d use 20% (30 divided by 1.5) for predicted volatility. So, in this case, to keep a constant 15% volatility I’d de-lever the S&P by being 75% long (15%/20%).10,11 Got it." Source = https://www.aqr.com/Insights/Perspectives/Wild-But-Not-Crazy
+
+
+```{r}
+sp500_vix_rolling_vol %>% 
+  ggplot(aes(x = date, y = sp500_roll_5)) + 
+  geom_line(color = "cornflowerblue") + 
+  scale_y_continuous(breaks = scales::pretty_breaks(n=10))
+```
+
+```{r}
+
+sp500_vix_rolling_vol %>% 
+  ggplot(aes(x = date, y = sp500_future_divided_vix)) + 
+  geom_line(color = "cornflowerblue") + 
+  scale_y_continuous(breaks = scales::pretty_breaks(n=10))
+```
+
+
+### Visualizing Realized Vol and Vix
+
+As we did before, let's start with a scatterplot to show 20-day trailing volatility on the x-axis and the VIX on the y-axis. This is nothing more than updating our July 2017 work with new data through to February of 2018. In other words, we haven't done anything yet that we couldn't have accomplished by re-running the old script.
+
+```{r}
+sp500_vix_rolling_vol %>%
+  ggplot(aes(x = sp500_roll_20, y = vix)) +
+  geom_point(colour = "light blue") +
+  geom_smooth(method='lm', se = FALSE, color = "pink", size = .5) +
+  ggtitle("Vix versus 20-Day Realized Vol") +
+  xlab("Realized vol preceding 20 trading days") +
+  ylab("Vix") +
+  # Add a '%' sign to the axes without having to rescale.
+  scale_y_continuous(labels = function(x){ paste0(x, "%") }) +
+  scale_x_continuous(labels = function(x){ paste0(x, "%") }) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+Same as before, we see a strong relationship between preceding volatility and the VIX. Now let's see how that relationship has look over the last three months, from November 2017 to February 2018. We do that by adding 
+`filter(date >= "2017-11-01")`.
+
+```{r}
+sp500_vix_rolling_vol %>% 
+  group_by(date) %>%
+  filter(date >= "2017-11-01") %>% 
+  ggplot(aes(x = sp500_roll_20, y = vix)) +
+  geom_point(color = "cornflowerblue") +
+  geom_smooth(method='lm', se = FALSE, color = "pink", size = .5) +
+  ggtitle("Vix versus 20-Day Realized Vol shaded by date ") +
+  xlab("Realized vol preceding 20 trading days") +
+  ylab("Vix") +
+  # Add a '%' sign to the axes without having to rescale.
+  scale_y_continuous(labels = function(x){ paste0(x, "%") }) +
+  scale_x_continuous(labels = function(x){ paste0(x, "%") }) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+Alright, we can see 5 observations way off to the upper right, where realized 20-day vol and the VIX have spiked to ~20%. Are those data points from the week of February 5th, 2018? We can find out by adding an aesthetic to color the points by date. We do that with `ggplot(aes(x = sp500_roll_20, y = vix, color = date))`.
+
+```{r}
+sp500_vix_rolling_vol %>% 
+  group_by(date) %>%
+  filter(date >= "2017-11-01") %>% 
+  ggplot(aes(x = sp500_roll_20, y = vix, color = date)) +
+  geom_point() +
+  geom_smooth(method='lm', se = FALSE, color = "pink", size = .5) +
+  ggtitle("Vix versus 20-Day Realized Vol shaded by date ") +
+  xlab("Realized vol preceding 20 trading days") +
+  ylab("Vix") +
+  # Add a '%' sign to the axes without having to rescale.
+  scale_y_continuous(labels = function(x){ paste0(x, "%") }) +
+  scale_x_continuous(labels = function(x){ paste0(x, "%") }) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+Since we grouped by date and set the points to color by date, the dots are getting a lighter shade of blue as they move toward the present. It shows that in November, all was calm and quiet - look at the dark blue circles. Then, the points start to creep up and to the right - realized vol is increasing and the VIX is increasing. We expect them to move together, though AQR's original point is that the VIX really is a reflection of past realized volatility, whereas many have hypothesized that the VIX caused market volatility last week. I'll leave that one to the experts.  
+
+Let's look at one more chart to put last week in perspective. We will look at our data since 2010 and shade the points by date. This should contextualize last week. 
+
+```{r}
+
+sp500_vix_rolling_vol %>% 
+  group_by(date) %>%
+  ggplot(aes(x = sp500_roll_20, y = vix, color = date)) +
+  geom_point() +
+  geom_smooth(method='lm', se = FALSE, color = "pink", size = .5) +
+  ggtitle("Vix versus 20-Day Realized Vol shaded by date:  ") +
+  xlab("Realized vol preceding 20 trading days") +
+  ylab("Vix") +
+  scale_y_continuous(labels = function(x){ paste0(x, "%") }) +
+  scale_x_continuous(labels = function(x){ paste0(x, "%") }) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+Ok, the light blue dots, those from 2017 and 2018 are still quite clustered at the low VIX low realized vol part of the chart, though some are indeed beginning to explore riskier territory. Our most extreme readings are darker blue - they are from 2011-2013. If we wish to isolate just one year - say, 2012 - we can do so with `filter(date >= "2011-12-31" & date <= "2013-01-01")`.
+
+```{r}
+sp500_vix_rolling_vol %>% 
+  group_by(date) %>%
+  filter(date >= "2011-12-31" & date <= "2013-01-01") %>% 
+  ggplot(aes(x = sp500_roll_20, y = vix, color = date)) +
+  geom_point() +
+  geom_smooth(method='lm', se = FALSE, color = "pink", size = .5) +
+  ggtitle("Vix versus 20-Day Realized Vol: 2012") +
+  xlab("Realized vol preceding 20 trading days") +
+  ylab("Vix") +
+  # Add a '%' sign to the axes without having to rescale.
+  scale_y_continuous(labels = function(x){ paste0(x, "%") }) +
+  scale_x_continuous(labels = function(x){ paste0(x, "%") }) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+Finally, let's rerun our regression of the VIX on 20-day trailing volatility and peek at the results.
+
+```{r}
+  sp500_vix_rolling_vol %>% 
+  do(model_20 = lm(vix ~ sp500_roll_20, data = .)) %>% 
+  tidy(model_20)
+
+sp500_vix_rolling_vol %>% 
+  do(model_20 = lm(vix ~ sp500_roll_20, data = .)) %>% 
+  glance(model_20) %>% 
+  select(r.squared)
+```
+
+We can see a coefficient of .71 and an R-squared of .69, which is the same as we observed back in July 2017, and consistent with the original AQR research that got us started. 
+
+That's all for today - thanks for reading!
+
+
